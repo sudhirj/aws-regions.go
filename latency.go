@@ -24,7 +24,6 @@ func NewLatencyChecker(regions ...string) LatencyChecker {
 }
 
 func (lc *LatencyChecker) Start() {
-	lc.latencies = make(map[string]time.Duration)
 	receiver := make(chan measurement)
 
 	for _, region := range lc.regions {
@@ -34,12 +33,7 @@ func (lc *LatencyChecker) Start() {
 	for {
 		select {
 		case m := <-receiver:
-			lc.Lock()
-			lc.latencies[m.region] = (m.latency + lc.latencies[m.region]) / 2
-			sort.Slice(lc.regions, func(i, j int) bool {
-				return lc.latencies[lc.regions[i]] < lc.latencies[lc.regions[j]]
-			})
-			lc.Unlock()
+			lc.store(m)
 		}
 	}
 }
@@ -59,10 +53,33 @@ func (lc *LatencyChecker) SortedRegions() []string {
 
 func (lc *LatencyChecker) Latencies() map[string]time.Duration {
 	dup := map[string]time.Duration{}
+	lc.RLock()
 	for k, v := range lc.latencies {
 		dup[k] = v
 	}
+	lc.RUnlock()
 	return dup
+}
+
+func (lc *LatencyChecker) store(m measurement) {
+	lc.Lock()
+	lc.latencies[m.region] = (m.latency + lc.latencies[m.region]) / 2
+	sort.Slice(lc.regions, func(i, j int) bool {
+		return lc.latencies[lc.regions[i]] < lc.latencies[lc.regions[j]]
+	})
+	lc.Unlock()
+}
+
+func (lc *LatencyChecker) Measure() {
+	wg := sync.WaitGroup{}
+	for _, region := range lc.SortedRegions() {
+		wg.Add(1)
+		go func(rg string) {
+			lc.store(measure(rg))
+			wg.Done()
+		}(region)
+	}
+	wg.Wait()
 }
 
 func keepMeasuring(region string, receiver chan measurement) {
